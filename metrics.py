@@ -119,6 +119,126 @@ def per_game_metrics(conn):
             "first_hit_s"]
     return m[keep]
 
+def sequential_hits_analysis(conn, gid):
+    """
+    Analisa sequências de acertos consecutivos (AS - Acertos em Sequência).
+    Retorna estatísticas sobre streaks de hits no mesmo navio.
+    """
+    shots = df_shots(conn, gid)
+    if shots.empty:
+        return {}
+    
+    shots = shots.sort_values("ts_ms")
+    streaks = []
+    current_streak = 0
+    
+    for _, shot in shots.iterrows():
+        if shot["hit"] == 1:
+            current_streak += 1
+        else:
+            if current_streak > 0:
+                streaks.append(current_streak)
+            current_streak = 0
+    
+    if current_streak > 0:
+        streaks.append(current_streak)
+    
+    if not streaks:
+        return {
+            "max_streak": 0,
+            "avg_streak": 0.0,
+            "total_streaks": 0,
+            "efficiency": 0.0  # % de acertos que fazem parte de streaks >1
+        }
+    
+    hits_in_streaks = sum(s for s in streaks if s > 1)
+    total_hits = shots["hit"].sum()
+    
+    return {
+        "max_streak": max(streaks),
+        "avg_streak": sum(streaks) / len(streaks),
+        "total_streaks": len(streaks),
+        "efficiency": (hits_in_streaks / total_hits * 100) if total_hits > 0 else 0.0
+    }
+
+def hunt_to_target_metrics(conn, gid):
+    """
+    Calcula métricas Hunt→Target: tiros até o primeiro acerto de cada navio.
+    Identifica novos navios pelo campo 'sunk' e 'remaining_def'.
+    """
+    shots = df_shots(conn, gid)
+    if shots.empty:
+        return {}
+    
+    shots = shots.sort_values("ts_ms")
+    hunt_phases = []
+    shots_since_last_hit = 0
+    
+    for _, shot in shots.iterrows():
+        shots_since_last_hit += 1
+        if shot["hit"] == 1:
+            # Primeiro acerto em um navio (nova fase Hunt→Target)
+            hunt_phases.append(shots_since_last_hit)
+            shots_since_last_hit = 0
+    
+    if not hunt_phases:
+        return {
+            "avg_hunt_shots": 0.0,
+            "min_hunt_shots": 0,
+            "max_hunt_shots": 0,
+            "total_hunts": 0
+        }
+    
+    return {
+        "avg_hunt_shots": sum(hunt_phases) / len(hunt_phases),
+        "min_hunt_shots": min(hunt_phases),
+        "max_hunt_shots": max(hunt_phases),
+        "total_hunts": len(hunt_phases)
+    }
+
+def first_player_advantage(conn):
+    """
+    Calcula a vantagem estatística do primeiro jogador (Win Rate de quem começa).
+    Identifica quem jogou primeiro pelo primeiro tiro em cada partida.
+    """
+    games = df_games(conn)
+    ge = df_game_end(conn)
+    shots = df_shots(conn)
+    
+    if games.empty or ge.empty or shots.empty:
+        return {}
+    
+    # Para cada partida, determinar quem jogou primeiro
+    first_players = {}
+    for gid in games["gid"]:
+        game_shots = shots[shots["gid"] == gid].sort_values("ts_ms")
+        if not game_shots.empty:
+            first_players[gid] = game_shots.iloc[0]["attacker"]
+    
+    # Contar vitórias
+    first_won = 0
+    second_won = 0
+    
+    for _, game in ge.iterrows():
+        gid = game["gid"]
+        winner = game["winner"]
+        if gid in first_players:
+            if first_players[gid] == winner:
+                first_won += 1
+            else:
+                second_won += 1
+    
+    total = first_won + second_won
+    if total == 0:
+        return {}
+    
+    return {
+        "first_player_wins": first_won,
+        "second_player_wins": second_won,
+        "first_player_win_rate": (first_won / total) * 100,
+        "total_games": total
+    }
+
 def overall_averages(conn):
     """KPIs médios e globais (todas as partidas)."""
     pg = per_game_metrics(conn)
@@ -137,6 +257,26 @@ def overall_averages(conn):
         global_acc = shots["hit"].sum() / len(shots)
     avg_first_hit_s = pg["first_hit_s"].dropna().mean() if "first_hit_s" in pg else None
 
+    # Agregar métricas avançadas
+    first_player_stats = first_player_advantage(conn)
+    
+    # Médias de hunt-to-target e sequential hits por todas as partidas
+    all_hunt_shots = []
+    all_max_streaks = []
+    all_avg_streaks = []
+    all_efficiencies = []
+    
+    for gid in pg["gid"]:
+        hunt = hunt_to_target_metrics(conn, gid)
+        if hunt and hunt.get("total_hunts", 0) > 0:
+            all_hunt_shots.append(hunt["avg_hunt_shots"])
+        
+        seq = sequential_hits_analysis(conn, gid)
+        if seq and seq.get("total_streaks", 0) > 0:
+            all_max_streaks.append(seq["max_streak"])
+            all_avg_streaks.append(seq["avg_streak"])
+            all_efficiencies.append(seq["efficiency"])
+    
     return {
         "n_games": len(pg),
         "avg_duration_ms": avg_duration_ms,
@@ -145,6 +285,13 @@ def overall_averages(conn):
         "avg_overall_acc_per_game": avg_overall_acc_per_game,
         "global_accuracy": global_acc,
         "avg_first_hit_s": avg_first_hit_s,
+        # Novas métricas
+        "first_player_win_rate": first_player_stats.get("first_player_win_rate"),
+        "first_player_wins": first_player_stats.get("first_player_wins", 0),
+        "second_player_wins": first_player_stats.get("second_player_wins", 0),
+        "avg_hunt_to_target": sum(all_hunt_shots) / len(all_hunt_shots) if all_hunt_shots else None,
+        "avg_max_streak": sum(all_max_streaks) / len(all_max_streaks) if all_max_streaks else None,
+        "avg_streak_efficiency": sum(all_efficiencies) / len(all_efficiencies) if all_efficiencies else None,
     }
 
 # -------- Gráficos --------
@@ -362,6 +509,17 @@ def main():
                     print(f"Acurácia global:         {k['global_accuracy']*100:.2f}%")
                 if k["avg_first_hit_s"] is not None:
                     print(f"Tempo médio até 1º hit:  {k['avg_first_hit_s']:.2f} s")
+                
+                # Novas métricas avançadas
+                print("\n=== Métricas Avançadas ===")
+                if k.get("first_player_win_rate") is not None:
+                    print(f"Win Rate 1º jogador:     {k['first_player_win_rate']:.1f}% ({k['first_player_wins']}/{k['first_player_wins']+k['second_player_wins']} vitórias)")
+                if k.get("avg_hunt_to_target") is not None:
+                    print(f"Hunt→Target médio:       {k['avg_hunt_to_target']:.2f} tiros")
+                if k.get("avg_max_streak") is not None:
+                    print(f"Streak máximo médio:     {k['avg_max_streak']:.2f} acertos")
+                if k.get("avg_streak_efficiency") is not None:
+                    print(f"Eficiência de streaks:   {k['avg_streak_efficiency']:.1f}%")
 
         # escolher gid por conveniência
         gid = args.gid
