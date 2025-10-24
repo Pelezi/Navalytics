@@ -12,7 +12,7 @@ import streamlit as st
 DB_DEFAULT = "battleship.db"
 
 # ----------------------- Streamlit Setup -----------------------
-st.set_page_config(page_title="Navalytics", layout="wide")
+st.set_page_config(page_title="Navalytics", page_icon="🛳️", layout="wide")
 st.title("🎯 Navalytics — Battleship Analytics")
 
 with st.sidebar:
@@ -128,6 +128,139 @@ def games_list(db: str) -> pd.DataFrame:
     """
     return sql_df(db, q)
 
+# --- NEW: Ranking ---
+@st.cache_data(show_spinner=False, ttl=1)
+def top_highscores(db: str, limit: int = 5) -> pd.DataFrame:
+        """
+        Highscore = maior score registrado para cada jogador (p1_score ou p2_score em game_end).
+        """
+        q = f"""
+        WITH scores AS (
+            SELECT
+                players.name AS Jogador,
+                game_end.p1_score AS Highscore
+            FROM game_end
+            LEFT JOIN players ON players.gid = game_end.gid
+            where players.player = 1
+            UNION ALL
+            SELECT
+                players.name AS Jogador,
+                game_end.p2_score AS Highscore
+            FROM game_end
+            LEFT JOIN players ON players.gid = game_end.gid
+            where players.player = 2
+        )
+        SELECT
+            Jogador,
+            MAX(Highscore) AS Highscore
+        FROM scores
+        WHERE Jogador IS NOT NULL
+        GROUP BY Jogador
+        ORDER BY Highscore DESC, Jogador ASC
+        LIMIT {int(limit)}
+        """
+        df = sql_df(db, q)
+        if df.empty:
+                return pd.DataFrame(columns=["Jogador", "Highscore"])
+        return df
+
+def get_player_ranking_position(db: str, player_name: str) -> Optional[int]:
+        """
+        Get the ranking position (1-based) for a player based on their highscore (p1_score/p2_score).
+        Returns None if player not found.
+        """
+        q = """
+        WITH scores AS (
+            SELECT 
+                players.name AS Jogador, 
+                p1_score AS Highscore 
+            FROM game_end
+            LEFT JOIN players ON players.gid = game_end.gid
+            WHERE players.player = 1
+            UNION ALL
+            SELECT 
+                players.name AS Jogador, 
+                p2_score AS Highscore 
+            FROM game_end
+            LEFT JOIN players ON players.gid = game_end.gid
+            WHERE players.player = 2
+        ), ranked AS (
+            SELECT
+                Jogador,
+                MAX(Highscore) AS Highscore,
+                ROW_NUMBER() OVER (ORDER BY MAX(Highscore) DESC, Jogador ASC) AS position
+            FROM scores
+            WHERE Jogador IS NOT NULL
+            GROUP BY Jogador
+        )
+        SELECT position FROM ranked WHERE Jogador = ?
+        """
+        df = sql_df(db, q, (player_name,))
+        if df.empty:
+                return None
+        return int(df.iloc[0]["position"])
+
+# ----------------------- UI Helpers -----------------------
+def render_ranking_text(rank_df: pd.DataFrame, max_rows: Optional[int] = None) -> None:
+    """
+    Ranking estilizado, empates com mesma posição.
+    Espera colunas: ["Jogador", "Highscore"].
+    """
+    import html
+
+    if rank_df is None or rank_df.empty:
+        st.info("Sem dados de Ranking ainda — jogue algumas partidas!")
+        return
+
+    df = (
+        rank_df[["Jogador", "Highscore"]]
+        .copy()
+        .rename(columns={"Jogador": "name", "Highscore": "score"})
+    )
+    df["score"] = pd.to_numeric(df["score"], errors="coerce").fillna(0).astype(int)
+    df = df.sort_values("score", ascending=False, kind="stable")
+    if max_rows is not None:
+        df = df.head(int(max_rows))
+
+    # Empates: mesma posição
+    df["rank"] = df["score"].rank(method="min", ascending=False).astype(int)
+
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    accents = {
+        1: "border-color:rgba(255,215,0,.45);background:linear-gradient(90deg,rgba(255,215,0,.18),transparent 55%);",
+        2: "border-color:rgba(192,192,192,.45);background:linear-gradient(90deg,rgba(192,192,192,.18),transparent 55%);",
+        3: "border-color:rgba(205,127,50,.45);background:linear-gradient(90deg,rgba(205,127,50,.22),transparent 55%);",
+    }
+
+    rows_html = []
+    for r in df.itertuples(index=False):
+        rank = int(r.rank)
+        name = html.escape(str(r.name or "—"))
+        score = int(r.score)
+        badge = medals.get(rank, f"{rank}.")
+        accent = accents.get(rank, "")
+
+        box_style = (
+            "width:100%;"
+            "display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;"
+            "padding:10px 12px;margin:6px 0;border:1px solid rgba(255,255,255,0.08);"
+            "border-radius:12px;background:rgba(255,255,255,0.03);" + accent
+        )
+        pos_style = "text-align:center;font-weight:800;font-variant-numeric:tabular-nums;opacity:.95;"
+        name_style = "font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+        score_style = "text-align:right;font-weight:700;font-variant-numeric:tabular-nums;opacity:.9;"
+
+        rows_html.append(
+            f'<div style="{box_style}">'
+            f'  <div style="{pos_style}">{badge}</div>'
+            f'  <div style="{name_style}">{name}</div>'
+            f'  <div style="{score_style}">{score}</div>'
+            f"</div>"
+        )
+
+    container_style = "max-width: 720px; margin: 0 auto; padding: 0 8px;"
+    st.markdown(f'<div style="{container_style}">' + "".join(rows_html) + "</div>", unsafe_allow_html=True)
+
 # ----------------------- KPI Helpers -----------------------
 def ms_to_mmss(ms: float) -> str:
     if ms is None or pd.isna(ms): return "—"
@@ -230,11 +363,44 @@ def player_summary(shots: pd.DataFrame, defender_side: int) -> int:
     except Exception:
         return None
 
-# ----------------------- Tabs -----------------------
-tab_dash, tab_live, tab_games = st.tabs(["📊 Dashboard", "🟢 Current Game", "🗂 Games"])
+# ----------------------- Live-state & Auto-jump -----------------------
+# Evaluate live game state ONCE up front
+current_gid_now = get_current_gid(db_path)
+prev_has_game = st.session_state.get("_has_game", False)
+has_game_now = current_gid_now is not None
+
+# Initialize active tab if not set
+if "_active_tab" not in st.session_state:
+    st.session_state["_active_tab"] = "📊 Dashboard"
+
+# Detect when a game just ended
+if prev_has_game and not has_game_now:
+    st.session_state["_just_ended"] = True
+    st.session_state["_last_ended_gid"] = st.session_state.get("_last_gid", None)
+    st.session_state["_balloons_shown"] = False  # Reset balloon flag
+
+# Update live-game flag and last gid
+st.session_state["_has_game"] = has_game_now
+if has_game_now:
+    st.session_state["_last_gid"] = current_gid_now
+
+# ----------------------- Tabs (with soft 'selected' control) -----------------------
+# By default: Dashboard, Current Game, Games, Ranking
+labels_default = ["📊 Dashboard", "🟢 Partida Atual", "🗂 Games", "🏆 Ranking"]
+
+active_tab = st.session_state["_active_tab"]
+
+# Reorder tabs to put active tab first (this makes it selected in Streamlit)
+if active_tab in labels_default:
+    labels = [active_tab] + [l for l in labels_default if l != active_tab]
+else:
+    labels = labels_default[:]
+
+_tabs = st.tabs(labels)
+tabs = {label: t for label, t in zip(labels, _tabs)}  # map label -> object
 
 # ----- Dashboard Tab -----
-with tab_dash:
+with tabs["📊 Dashboard"]:
     colA, colB, colC, colD, colE, colF = st.columns(6)
 
     # # games
@@ -285,32 +451,128 @@ with tab_dash:
             "p1_shots":"P1 Tiros","p1_hits":"P1 Acertos","p1_acc":"P1 Acc",
             "p2_shots":"P2 Tiros","p2_hits":"P2 Acertos","p2_acc":"P2 Acc",
         })
-        st.dataframe(view, use_container_width=True, height=300)
+        st.dataframe(view, width='stretch', height=300)
 
 # ----- Current Game Tab -----
-with tab_live:
-    gid = get_current_gid(db_path)
-    if auto:
-        st.experimental_set_query_params(t=str(int(time.time())))
-        time.sleep(interval_s)
+with tabs["🟢 Partida Atual"]:
+    gid = current_gid_now  # reuse computed state
 
-    if not gid:
+    # Check if we should show the "just ended" message
+    show_ended = st.session_state.get("_just_ended", False) and st.session_state.get("_last_ended_gid")
+    
+    if show_ended:
+        # Game just ended - show results and ranking
+        ended_gid = st.session_state["_last_ended_gid"]
+        
+        # Show balloons only once
+        if not st.session_state.get("_balloons_shown", False):
+            st.balloons()
+            st.session_state["_balloons_shown"] = True
+        
+        st.success("🎉 Partida Encerrada!")
+        
+        # Get game info
+        p1, p2 = get_players(db_path, ended_gid)
+        s = shots_df(db_path, ended_gid)
+        
+        # Get winner
+        winner_q = "SELECT winner FROM game_end WHERE gid=?"
+        winner_df = sql_df(db_path, winner_q, (ended_gid,))
+        winner = int(winner_df.iloc[0]["winner"]) if not winner_df.empty else None
+        
+        # Calculate scores for this game
+        p1_hits = int(s[s["attacker"]==1]["hit"].sum()) if not s.empty else 0
+        p2_hits = int(s[s["attacker"]==2]["hit"].sum()) if not s.empty else 0
+        
+        st.markdown(f"### 🏁 Resultado Final")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown(f"#### {'🏆 ' if winner == 1 else ''}{p1 or 'Jogador 1'}")
+            st.metric("Acertos nesta partida", p1_hits)
+            if p1:
+                pos = get_player_ranking_position(db_path, p1)
+                if pos:
+                    st.metric("Posição no Ranking", f"#{pos}")
+        
+        with col2:
+            st.markdown(f"#### {'🏆 ' if winner == 2 else ''}{p2 or 'Jogador 2'}")
+            st.metric("Acertos nesta partida", p2_hits)
+            if p2:
+                pos = get_player_ranking_position(db_path, p2)
+                if pos:
+                    st.metric("Posição no Ranking", f"#{pos}")
+        
+        st.divider()
+        st.subheader("🏆 Top 10 Ranking Atual")
+        rank = top_highscores(db_path, limit=10)
+        if not rank.empty:
+            render_ranking_text(rank, max_rows=10)
+        
+        # Clear the flag after showing once
+        if st.button("✅ OK, entendi"):
+            st.session_state["_just_ended"] = False
+            st.rerun()
+        
+        st.info("💡 A próxima partida aparecerá aqui automaticamente quando iniciada.")
+    
+    elif not gid:
         st.info("Nenhuma partida ativa no momento.")
     else:
         p1, p2 = get_players(db_path, gid)
         W, H = get_board_size(db_path, gid)
         s = shots_df(db_path, gid)
 
-        st.markdown(f"**GID:** `{gid}`  •  **Board:** {W}×{H}  •  **Players:** {p1 or 'P1'} × {p2 or 'P2'}")
+        st.markdown(f"**GID:** `{gid}`  •  **Players:** {p1 or 'P1'} × {p2 or 'P2'}")
 
-        # elapsed vs avg duration
+        # elapsed vs avg duration → progress bar with average marker
         started_ms = get_started_at_ms(db_path, gid)
         if started_ms:
             elapsed_ms = now_ms() - started_ms
             avg_ms = get_avg_duration_ms(db_path)
+            # always show elapsed text
+            st.caption(f"Tempo decorrido: **{ms_to_mmss(elapsed_ms)}**" + (f"  •  Média histórica: **{ms_to_mmss(avg_ms)}**" if avg_ms else ""))
+
             if avg_ms:
-                status = "abaixo da média" if elapsed_ms < avg_ms else "acima da média"
-                st.caption(f"Tempo decorrido: **{ms_to_mmss(elapsed_ms)}** — {status} (média histórica: {ms_to_mmss(avg_ms)})")
+                # use a horizontal bar (seconds) and draw a vertical line for the average
+                elapsed_s = elapsed_ms / 1000.0
+                avg_s = avg_ms / 1000.0
+                x_max = max(elapsed_s, avg_s) * 1.15 if max(elapsed_s, avg_s) > 0 else 60.0
+
+                # color: green if elapsed < avg, yellow if elapsed > avg (equal -> green)
+                bar_color = "limegreen" if elapsed_s <= avg_s else "gold"
+
+                fig = go.Figure()
+                # bar representing elapsed time
+                fig.add_trace(go.Bar(
+                    x=[elapsed_s],
+                    y=[""],
+                    orientation="h",
+                    marker_color=bar_color,
+                    hovertemplate="Decorrido: %{x:.1f}s<extra></extra>"
+                ))
+                # average marker line
+                fig.add_shape(
+                    type="line",
+                    x0=avg_s, x1=avg_s, y0=-0.4, y1=0.4,
+                    line=dict(color="red", width=3, dash="dash")
+                )
+                # label for the average
+                fig.add_annotation(
+                    x=avg_s, y=0.5,
+                    text=f"Média: {ms_to_mmss(avg_ms)}",
+                    showarrow=False,
+                    yanchor="bottom",
+                    font=dict(color="red", size=11)
+                )
+
+                fig.update_xaxes(range=[0, x_max], title_text="Segundos")
+                fig.update_yaxes(showticklabels=False)
+                fig.update_layout(height=110, margin=dict(l=10, r=10, t=10))
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                # no historical average yet — show simple progress feedback
+                st.info("Ainda não há média histórica para comparar.")
 
         # per-player summaries
         cols = st.columns(4)
@@ -337,23 +599,51 @@ with tab_live:
         if h2t.empty:
             c2.info("Sem dados de Hunt→Target ainda.")
         else:
-            c2.dataframe(h2t, use_container_width=True, height=160)
+            c2.dataframe(h2t, width='stretch', height=160)
 
         # mini boards
         st.subheader("Mini boards")
         cL, cR = st.columns(2)
-        cL.plotly_chart(board_heatmap(s[s["attacker"]==1], W, H, f"Ataques do {p1 or 'P1'}"), use_container_width=True)
-        cR.plotly_chart(board_heatmap(s[s["attacker"]==2], W, H, f"Ataques do {p2 or 'P2'}"), use_container_width=True)
+        figL = board_heatmap(s[s["attacker"]==1], W, H, f"Ataques do {p1 or 'P1'}")
+        figR = board_heatmap(s[s["attacker"]==2], W, H, f"Ataques do {p2 or 'P2'}")
+
+        # Make cells square: anchor y to x and set explicit figure size
+        cell_px = 30
+        min_px, max_px = 200, 800
+        height_px = int(max(min_px, min(max_px, cell_px * H + 80)))
+        width_px  = int(max(min_px, min(max_px, cell_px * W + 80)))
+
+        for fig in (figL, figR):
+            fig.update_layout(
+            height=height_px,
+            width=width_px,
+            yaxis=dict(scaleanchor="x", scaleratio=1, autorange="reversed"),
+            margin=dict(l=10, r=10, t=40, b=10),
+            )
+
+        cL.plotly_chart(figL, use_container_width=False)
+        cR.plotly_chart(figR, use_container_width=False)
 
 # ----- Games Tab -----
-with tab_games:
+with tabs["🗂 Games"]:
     st.subheader("Todas as partidas")
     all_tbl = games_list(db_path)
     if all_tbl.empty:
         st.info("Sem partidas.")
     else:
-        st.dataframe(all_tbl, use_container_width=True, height=380)
-        st.caption("Dica: clique nas cabeçalhos para ordenar.")
+        st.dataframe(all_tbl, width='stretch', height=380)
 
-st.markdown("---")
-st.caption("Prototype • Streamlit • Uses your existing SQLite schema produced by ingest_serial.py")
+# ----- Ranking Tab (Top 10 Highscores) -----
+with tabs["🏆 Ranking"]:
+    st.subheader("Top 10 — Highscores por Jogador")
+    rank = top_highscores(db_path, limit=10)
+    if rank.empty:
+        st.info("Sem dados de Ranking ainda — jogue algumas partidas!")
+    else:
+        # Text-first rendering (clean, compact)
+        render_ranking_text(rank, max_rows=10)
+
+# Auto-refresh logic (kept as-is)
+if auto:
+    time.sleep(interval_s)
+    st.rerun()

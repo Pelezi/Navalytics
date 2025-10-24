@@ -30,6 +30,84 @@ def ensure_schema(conn: sqlite3.Connection):
 # ===== NOVO: gid atual da partida (gerado ao receber PN) =====
 CURRENT_GID: str | None = None
 
+# >>> ADD: utilitário para fechar partidas sem GE
+def close_unfinished_games(conn: sqlite3.Connection) -> int:
+    """
+    Fecha partidas que possuem registro em 'games' mas ainda não possuem linha em 'game_end'.
+    - finished_at_ms = último ts_ms em shots daquele gid (fallback para started_at_ms)
+    - winner = 0 (indefinido)
+    - p1_score/p2_score = 0
+    - Preenche contagens básicas de tiros e acertos
+    Retorna a quantidade de partidas fechadas.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT g.gid, g.started_at_ms
+        FROM games g
+        LEFT JOIN game_end ge ON ge.gid = g.gid
+        WHERE ge.gid IS NULL
+    """
+    )
+    to_close = cur.fetchall()
+    closed = 0
+
+    for gid, started_at_ms in to_close:
+        # último shot da partida
+        cur.execute("SELECT MAX(ts_ms) FROM shots WHERE gid = ?", (gid,))
+        row = cur.fetchone()
+        last_shot_ms = row[0] if row and row[0] is not None else None
+
+        finished_at_ms = (
+            last_shot_ms if last_shot_ms is not None else (started_at_ms or int(time.time() * 1000))
+        )
+        duration_ms = (
+            finished_at_ms - (started_at_ms or finished_at_ms)
+            if finished_at_ms is not None
+            else 0
+        )
+
+        # contagens básicas (mantém telemetria mínima)
+        cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 1", (gid,))
+        p1_shots = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 2", (gid,))
+        p2_shots = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 1 AND hit = 1", (gid,))
+        p1_hits = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 2 AND hit = 1", (gid,))
+        p2_hits = cur.fetchone()[0]
+
+        # inserir o encerramento com pontuação zerada
+        cur.execute(
+            """
+            INSERT INTO game_end
+              (gid, winner, duration_ms,
+               p1_shots, p1_hits, p1_sunk_cells, p1_score,
+               p2_shots, p2_hits, p2_sunk_cells, p2_score,
+               finished_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(gid) DO NOTHING
+        """,
+            (
+                gid,
+                0,  # winner indefinido
+                int(duration_ms) if duration_ms is not None else 0,
+                int(p1_shots),
+                int(p1_hits),
+                0,
+                0,  # sunk_cells não calculado aqui
+                int(p2_shots),
+                int(p2_hits),
+                0,
+                0,
+                int(finished_at_ms),
+            ),
+        )
+        closed += 1
+
+    conn.commit()
+    return closed
+
 def new_db_gid() -> str:
     return uuid.uuid4().hex  # 32 chars hex único
 
@@ -71,6 +149,11 @@ def handle_event(conn, ev) -> str:
                 f"p1='{d['name1']}' p2='{d['name2']}'")
 
     elif k == "GS":
+        # >>> CHANGE: fechar quaisquer partidas antigas sem GE antes de criar/atualizar games
+        closed = close_unfinished_games(conn)
+        if closed:
+            log("DB", f"Fechadas {closed} partidas sem game_end antes de registrar GS.")
+
         db_gid = ensure_current_gid("GS")
         conn.execute(
             """
