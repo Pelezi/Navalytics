@@ -29,30 +29,88 @@ def _fmt_ago(ts_ms: int) -> str:
     return f"{delta//60:02d}:{delta%60:02d}"
 
 def board_figure(shots, W: int, H: int, title: str) -> go.Figure:
-    """Grid quadrado, com X (hit) e círculo (miss)."""
+    """Grid quadrado, com X (acerto), círculo (erro) e destaque de navios afundados."""
+    from collections import deque
+
     fig = go.Figure()
 
-    miss = shots[shots["hit"] == 0] if not shots.empty else shots
-    hit  = shots[shots["hit"] == 1] if not shots.empty else shots
+    # --- Split shots
+    erro   = shots[shots["hit"] == 0] if not shots.empty else shots
+    acerto = shots[shots["hit"] == 1] if not shots.empty else shots
 
-    if not miss.empty:
+    # --- Compute sunk ship components (per board = per attacker)
+    sunk_cells = set()
+    if not shots.empty and "sunk" in shots.columns:
+        # all hit cells on this board
+        hit_cells = {(int(r["x"]), int(r["y"])) for _, r in shots.iterrows() if int(r.get("hit", 0)) == 1}
+
+        def neighbors(c):
+            x, y = c
+            return [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+
+        def component(start):
+            """Return 4-neighbor connected component of hits containing start."""
+            seen, dq = set(), deque([start])
+            while dq:
+                c = dq.popleft()
+                if c in seen or c not in hit_cells:
+                    continue
+                seen.add(c)
+                for nb in neighbors(c):
+                    if nb in hit_cells and nb not in seen:
+                        dq.append(nb)
+            return seen
+
+        # for each finalizing hit (sunk==1), collect the whole ship component
+        sunk_hits = shots[(shots["hit"] == 1) & (shots["sunk"] == 1)]
+        for _, r in sunk_hits.iterrows():
+            start = (int(r["x"]), int(r["y"]))
+            sunk_cells |= component(start)
+
+    # --- Draw sunk overlays (below traces)
+    for (x, y) in sunk_cells:
+        # plot coords are 1-based centers; cell bounds are ±0.5
+        cx, cy = x + 1, y + 1
+        fig.add_shape(
+            type="rect",
+            x0=cx - 0.5, x1=cx + 0.5, y0=cy - 0.5, y1=cy + 0.5,
+            fillcolor="rgba(245,158,11,0.28)",  # amber @ ~28%
+            line=dict(color="#f59e0b", width=2),
+            layer="below",
+        )
+
+    # Legend chip for sunk overlay
+    if sunk_cells:
         fig.add_trace(go.Scatter(
-            x=miss["x"] + 1, y=miss["y"] + 1,
+            x=[None], y=[None], mode="markers",
+            marker=dict(symbol="square", size=14,
+                        color="rgba(245,158,11,0.28)",
+                        line=dict(color="#f59e0b", width=2)),
+            name="Navio afundado",
+            hoverinfo="skip", showlegend=True
+        ))
+
+    # --- Misses
+    if not erro.empty:
+        fig.add_trace(go.Scatter(
+            x=erro["x"] + 1, y=erro["y"] + 1,
             mode="markers", name="Erro",
             marker=dict(symbol="circle-open", size=18, line=dict(width=2, color="#4aa3ff")),
             hovertemplate="Erro • %{text}<extra></extra>",
-            text=[_coord(int(x), int(y)) for x, y in zip(miss["x"], miss["y"])]
+            text=[_coord(int(x), int(y)) for x, y in zip(erro["x"], erro["y"])]
         ))
-    if not hit.empty:
+
+    # --- Hits
+    if not acerto.empty:
         fig.add_trace(go.Scatter(
-            x=hit["x"] + 1, y=hit["y"] + 1,
+            x=acerto["x"] + 1, y=acerto["y"] + 1,
             mode="markers", name="Acerto",
             marker=dict(symbol="x", size=18, line=dict(width=3, color="#ff6b6b")),
             hovertemplate="Acerto • %{text}<extra></extra>",
-            text=[_coord(int(x), int(y)) for x, y in zip(hit["x"], hit["y"])]
+            text=[_coord(int(x), int(y)) for x, y in zip(acerto["x"], acerto["y"])]
         ))
 
-    # Linhas do grid
+    # --- Grid lines
     for x in range(W + 1):
         fig.add_shape(type="line", x0=x + 0.5, x1=x + 0.5, y0=0.5, y1=H + 0.5,
                       line=dict(color="rgba(255,255,255,.15)", width=1))
@@ -60,7 +118,7 @@ def board_figure(shots, W: int, H: int, title: str) -> go.Figure:
         fig.add_shape(type="line", x0=0.5, x1=W + 0.5, y0=y + 0.5, y1=y + 0.5,
                       line=dict(color="rgba(255,255,255,.15)", width=1))
 
-    # Eixos
+    # --- Axes (square cells)
     fig.update_xaxes(
         range=[0.5, W + 0.5], dtick=1, tickmode="array",
         tickvals=list(range(1, W + 1)), ticktext=_letters(W),
@@ -70,11 +128,10 @@ def board_figure(shots, W: int, H: int, title: str) -> go.Figure:
         range=[H + 0.5, 0.5], dtick=1, tickmode="array",
         tickvals=list(range(1, H + 1)), ticktext=[str(i) for i in range(1, H + 1)],
         autorange=False, mirror=False, showgrid=False, fixedrange=True,
-        # >>> garante células sempre quadradas <<<
         scaleanchor="x", scaleratio=1
     )
 
-    # Dimensão quadrada (largura == altura)
+    # --- Square figure size
     side = int(min(MAX_SIZE, max(MIN_SIZE, CELL_PX * max(W, H))))
     fig.update_layout(
         title=title, title_x=0,
@@ -247,8 +304,8 @@ def render(db_path: str, auto: bool, interval_s: int):
                     who  = (p1 if atk == 1 else p2) or f"Player {atk}"
                     xy   = _coord(int(r.get("x", 0)), int(r.get("y", 0)))
                     ago  = _fmt_ago(int(r.get("ts_ms", now_ms())))
-                    pill = f"<span class='pill {'hit' if hit else 'miss'}'>{'HIT' if hit else 'MISS'}</span>"
-                    sunk_pill = " <span class='pill sunk'>SUNK</span>" if sunk else ""
+                    pill = f"<span class='pill {'hit' if hit else 'miss'}'>{'Acerto' if hit else 'Erro'}</span>"
+                    sunk_pill = " <span class='pill sunk'>Afundou</span>" if sunk else ""
                     rows.append(
                         f"<div class='evt'>{pill}{sunk_pill}"
                         f"<b>{html.escape(who)}</b> • <code>{xy}</code>"
