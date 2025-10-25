@@ -7,4 +7,4 @@ def render(db_path: str):
     if all_tbl.empty:
         st.info("Sem partidas.")
     else:
-        st.dataframe(all_tbl, width='stretch', height=380)
+        st.dataframe(all_tbl, use_container_width=True, height=380)

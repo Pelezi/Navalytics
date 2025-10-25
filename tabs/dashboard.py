@@ -55,4 +55,4 @@ def render(db_path: str):
         "p1_shots":"P1 Tiros","p1_hits":"P1 Acertos","p1_acc":"P1 Acc",
         "p2_shots":"P2 Tiros","p2_hits":"P2 Acertos","p2_acc":"P2 Acc",
     })
-    st.dataframe(view, width='stretch', height=300)
+    st.dataframe(view, use_container_width=True, height=300)

@@ -1,16 +1,92 @@
 # tabs/current_game.py
 import time
+import html
+from app import PLOT_CONFIG
 import streamlit as st
 import plotly.graph_objects as go
 
 from core import (
-    get_current_gid, get_players, get_board_size, shots_df, get_started_at_ms,
-    get_avg_duration_ms, now_ms, ms_to_mmss, player_summary, hit_streaks,
-    hunt_to_target, board_heatmap, top_highscores, get_player_ranking_position, sql_df
+    get_current_gid, get_players, get_board_size, shots_df, get_started_at_ms, now_ms, ms_to_mmss, player_summary, hit_streaks,
+    hunt_to_target, top_highscores, get_player_ranking_position, sql_df
 )
 
+TOTAL_SHIPS = 5      # ajuste se necessário
+CELL_PX = 56        # tamanho do "quadradinho" do tabuleiro (px)
+MIN_SIZE = 360      # tamanho mínimo do tabuleiro (px)
+MAX_SIZE = 760      # tamanho máximo do tabuleiro (px)
+
+# ---------- Helpers visuais ----------
+def _letters(n: int) -> list[str]:
+    return [chr(65 + i) for i in range(n)]
+
+def _coord(x: int, y: int) -> str:
+    return f"{chr(65 + int(x))}{int(y) + 1}"
+
+def _fmt_ago(ts_ms: int) -> str:
+    if ts_ms is None:
+        return "—"
+    delta = max(0, int((now_ms() - int(ts_ms)) / 1000))
+    return f"{delta//60:02d}:{delta%60:02d}"
+
+def board_figure(shots, W: int, H: int, title: str) -> go.Figure:
+    """Grid quadrado, com X (hit) e círculo (miss)."""
+    fig = go.Figure()
+
+    miss = shots[shots["hit"] == 0] if not shots.empty else shots
+    hit  = shots[shots["hit"] == 1] if not shots.empty else shots
+
+    if not miss.empty:
+        fig.add_trace(go.Scatter(
+            x=miss["x"] + 1, y=miss["y"] + 1,
+            mode="markers", name="Erro",
+            marker=dict(symbol="circle-open", size=18, line=dict(width=2, color="#4aa3ff")),
+            hovertemplate="Erro • %{text}<extra></extra>",
+            text=[_coord(int(x), int(y)) for x, y in zip(miss["x"], miss["y"])]
+        ))
+    if not hit.empty:
+        fig.add_trace(go.Scatter(
+            x=hit["x"] + 1, y=hit["y"] + 1,
+            mode="markers", name="Acerto",
+            marker=dict(symbol="x", size=18, line=dict(width=3, color="#ff6b6b")),
+            hovertemplate="Acerto • %{text}<extra></extra>",
+            text=[_coord(int(x), int(y)) for x, y in zip(hit["x"], hit["y"])]
+        ))
+
+    # Linhas do grid
+    for x in range(W + 1):
+        fig.add_shape(type="line", x0=x + 0.5, x1=x + 0.5, y0=0.5, y1=H + 0.5,
+                      line=dict(color="rgba(255,255,255,.15)", width=1))
+    for y in range(H + 1):
+        fig.add_shape(type="line", x0=0.5, x1=W + 0.5, y0=y + 0.5, y1=y + 0.5,
+                      line=dict(color="rgba(255,255,255,.15)", width=1))
+
+    # Eixos
+    fig.update_xaxes(
+        range=[0.5, W + 0.5], dtick=1, tickmode="array",
+        tickvals=list(range(1, W + 1)), ticktext=_letters(W),
+        side="top", mirror=False, showgrid=False, fixedrange=True
+    )
+    fig.update_yaxes(
+        range=[H + 0.5, 0.5], dtick=1, tickmode="array",
+        tickvals=list(range(1, H + 1)), ticktext=[str(i) for i in range(1, H + 1)],
+        autorange=False, mirror=False, showgrid=False, fixedrange=True,
+        # >>> garante células sempre quadradas <<<
+        scaleanchor="x", scaleratio=1
+    )
+
+    # Dimensão quadrada (largura == altura)
+    side = int(min(MAX_SIZE, max(MIN_SIZE, CELL_PX * max(W, H))))
+    fig.update_layout(
+        title=title, title_x=0,
+        width=side, height=side,
+        margin=dict(l=10, r=10, t=66, b=64),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", x=0, xanchor="left", y=-0.12, yanchor="top")
+    )
+    return fig
+
 def render(db_path: str, auto: bool, interval_s: int):
-    # Compute current/ended state
+    # Estado de partida atual/encerrada
     current_gid_now = get_current_gid(db_path)
     prev_has_game = st.session_state.get("_has_game", False)
     has_game_now = current_gid_now is not None
@@ -24,11 +100,10 @@ def render(db_path: str, auto: bool, interval_s: int):
     if has_game_now:
         st.session_state["_last_gid"] = current_gid_now
 
-    sel_is_current = st.session_state.get("active_pill") == "🟢 Partida Atual"
-
     gid = current_gid_now
     show_ended = st.session_state.get("_just_ended", False) and st.session_state.get("_last_ended_gid")
 
+    # ---------------- Partida encerrada ----------------
     if show_ended:
         ended_gid = st.session_state["_last_ended_gid"]
 
@@ -45,8 +120,8 @@ def render(db_path: str, auto: bool, interval_s: int):
         winner_df = sql_df(db_path, winner_q, (ended_gid,))
         winner = int(winner_df.iloc[0]["winner"]) if not winner_df.empty else None
 
-        p1_hits = int(s[s["attacker"]==1]["hit"].sum()) if not s.empty else 0
-        p2_hits = int(s[s["attacker"]==2]["hit"].sum()) if not s.empty else 0
+        p1_hits = int(s[s["attacker"] == 1]["hit"].sum()) if not s.empty else 0
+        p2_hits = int(s[s["attacker"] == 2]["hit"].sum()) if not s.empty else 0
 
         st.markdown("### 🏁 Resultado Final")
         col1, col2 = st.columns(2)
@@ -80,105 +155,115 @@ def render(db_path: str, auto: bool, interval_s: int):
 
         st.info("💡 A próxima partida aparecerá aqui automaticamente quando iniciada.")
 
+    # ---------------- Sem partida ativa ----------------
     elif not gid:
         st.info("Nenhuma partida ativa no momento.")
+
+    # ---------------- Partida em andamento ----------------
     else:
         p1, p2 = get_players(db_path, gid)
         W, H = get_board_size(db_path, gid)
         s = shots_df(db_path, gid)
 
-        st.markdown(f"**GID:** `{gid}`  •  **Players:** {p1 or 'P1'} × {p2 or 'P2'}")
+        # Estilo dos cards/feed
+        st.markdown("""
+        <style>
+          .kpi {border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.03);
+                border-radius:16px; padding:14px 16px; box-shadow:0 6px 18px rgba(0,0,0,.25);}
+          .kpi h3 {margin:0 0 6px 0; font-size:13px; opacity:.85; letter-spacing:.02em;}
+          .kpi .v {font-weight:800; font-size:28px;}
+          .live {display:inline-flex; align-items:center; gap:8px; font-weight:700; opacity:.9;}
+          .dot {width:10px; height:10px; border-radius:50%; background:#22c55e; box-shadow:0 0 12px #22c55e;}
+          .feed-card {border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.03);
+                      border-radius:16px; padding:12px; height:640px; overflow:auto;}
+          .evt {border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:10px 12px; margin:8px 0;}
+          .pill {display:inline-block; font-weight:800; font-size:11px; padding:2px 8px; border-radius:999px; margin-right:8px;}
+          .hit {background:#ff6b6b22; border:1px solid #ff6b6b; color:#ff6b6b;}
+          .miss{background:#4aa3ff22; border:1px solid #4aa3ff; color:#4aa3ff;}
+          .sunk{background:#f59e0b22; border:1px solid #f59e0b; color:#f59e0b;}
+          .evt small {opacity:.8;}
+        </style>
+        """, unsafe_allow_html=True)
 
+        # Cabeçalho
+        st.markdown(
+            f"### Partida em andamento  "
+            f"<span class='live'><span class='dot'></span>LIVE</span>  "
+            f"<span style='opacity:.7'>• GID: <code>{gid}</code> • Jogadores: <b>{html.escape(p1 or 'P1')}</b> × <b>{html.escape(p2 or 'P2')}</b></span>",
+            unsafe_allow_html=True
+        )
+
+        # KPIs
         started_ms = get_started_at_ms(db_path, gid)
-        if started_ms:
-            elapsed_ms = now_ms() - started_ms
-            avg_ms = get_avg_duration_ms(db_path)
-            st.caption(
-                f"Tempo decorrido: **{ms_to_mmss(elapsed_ms)}**" +
-                (f"  •  Média histórica: **{ms_to_mmss(avg_ms)}**" if avg_ms else "")
-            )
-            if avg_ms:
-                elapsed_s = elapsed_ms / 1000.0
-                avg_s = avg_ms / 1000.0
-                x_max = max(elapsed_s, avg_s) * 1.15 if max(elapsed_s, avg_s) > 0 else 60.0
-                bar_color = "limegreen" if elapsed_s <= avg_s else "gold"
+        elapsed_ms = (now_ms() - started_ms) if started_ms else None
+        total_shots = len(s)
+        total_hits = int(s["hit"].sum()) if not s.empty else 0
+        acc = (total_hits / total_shots * 100.0) if total_shots else 0.0
 
-                fig = go.Figure()
-                fig.add_trace(go.Bar(
-                    x=[elapsed_s], y=[""], orientation="h",
-                    marker_color=bar_color, hovertemplate="Decorrido: %{x:.1f}s<extra></extra>"
-                ))
-                fig.add_shape(
-                    type="line",
-                    x0=avg_s, x1=avg_s, y0=-0.4, y1=0.4,
-                    line=dict(color="red", width=3, dash="dash")
-                )
-                fig.add_annotation(
-                    x=avg_s, y=0.5,
-                    text=f"Média: {ms_to_mmss(avg_ms)}",
-                    showarrow=False, yanchor="bottom",
-                    font=dict(color="red", size=11)
-                )
-                fig.update_xaxes(range=[0, x_max], title_text="Segundos")
-                fig.update_yaxes(showticklabels=False)
-                fig.update_layout(height=110, margin=dict(l=10, r=10, t=10))
-                st.plotly_chart(fig, use_container_width=True)
+        p1_sunk = int(s[(s["defender"] == 1) & (s["sunk"] == 1)].shape[0]) if not s.empty else 0
+        p2_sunk = int(s[(s["defender"] == 2) & (s["sunk"] == 1)].shape[0]) if not s.empty else 0
+        p1_left = max(0, TOTAL_SHIPS - p1_sunk)
+        p2_left = max(0, TOTAL_SHIPS - p2_sunk)
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown("<div class='kpi'><h3>Acurácia (geral)</h3>"
+                        f"<div class='v'>{acc:.1f}%</div></div>", unsafe_allow_html=True)
+        with c2:
+            st.markdown("<div class='kpi'><h3>Tempo de Partida</h3>"
+                        f"<div class='v'>{ms_to_mmss(elapsed_ms) if elapsed_ms else '—'}</div></div>", unsafe_allow_html=True)
+        with c3:
+            st.markdown("<div class='kpi'><h3>Tiros Disparados</h3>"
+                        f"<div class='v'>{total_shots}</div></div>", unsafe_allow_html=True)
+        with c4:
+            st.markdown("<div class='kpi'><h3>Navios Restantes (P1/P2)</h3>"
+                        f"<div class='v'>{p1_left}/{TOTAL_SHIPS} • {p2_left}/{TOTAL_SHIPS}</div></div>", unsafe_allow_html=True)
+
+        # ---------- Linha principal: 2 tabuleiros lado a lado (esq) + feed (dir) ----------
+        boards_area, feed_area = st.columns([8, 4], gap="large")
+
+        with boards_area:
+            b1, b2 = st.columns(2, gap="large")
+            with b1:
+                fig1 = board_figure(s[s["attacker"] == 1], W, H, f"Tabuleiro — Ataques de {p1 or 'P1'}")
+                st.plotly_chart(fig1, config=PLOT_CONFIG)
+            with b2:
+                fig2 = board_figure(s[s["attacker"] == 2], W, H, f"Tabuleiro — Ataques de {p2 or 'P2'}")
+                st.plotly_chart(fig2, config=PLOT_CONFIG)
+
+        with feed_area:
+            st.markdown("#### Event Feed")
+            feed = s.sort_values("ts_ms", ascending=False).head(14)
+
+            # Build all event rows as a single HTML string so they stay inside the card
+            rows = []
+            if feed.empty:
+                rows.append("<div class='evt'><small>Sem eventos ainda.</small></div>")
             else:
-                st.info("Ainda não há média histórica para comparar.")
+                for _, r in feed.iterrows():
+                    hit  = int(r.get("hit", 0)) == 1
+                    sunk = int(r.get("sunk", 0)) == 1
+                    atk  = int(r.get("attacker", 0))
+                    who  = (p1 if atk == 1 else p2) or f"Player {atk}"
+                    xy   = _coord(int(r.get("x", 0)), int(r.get("y", 0)))
+                    ago  = _fmt_ago(int(r.get("ts_ms", now_ms())))
+                    pill = f"<span class='pill {'hit' if hit else 'miss'}'>{'HIT' if hit else 'MISS'}</span>"
+                    sunk_pill = " <span class='pill sunk'>SUNK</span>" if sunk else ""
+                    rows.append(
+                        f"<div class='evt'>{pill}{sunk_pill}"
+                        f"<b>{html.escape(who)}</b> • <code>{xy}</code>"
+                        f"<br><small>{ago} atrás</small></div>"
+                    )
 
-        cols = st.columns(4)
-        for idx, player in enumerate((1,2)):
-            sub = s[s["attacker"]==player]
-            shots = len(sub)
-            hits = int(sub["hit"].sum()) if not sub.empty else 0
-            acc = (hits/shots)*100 if shots>0 else 0.0
-            rem = player_summary(s, defender_side=3-player)
-            cols[idx].metric(f"Jogador {player} — {p1 if player==1 else p2}",
-                             f"{hits}/{shots} hits", f"{acc:.1f}% acc")
-            cols[idx+2].metric(f"Defensor {3-player} — Células rest.",
-                               rem if rem is not None else "—")
+            feed_html = "<div class='feed-card' style='width:100%; display:block;'>" + "".join(rows) + "</div>"
+            st.markdown(feed_html, unsafe_allow_html=True)
 
-        st.subheader("Sequências e Hunt→Target")
-        strk = hit_streaks(s)
-        c1, c2 = st.columns(2)
-        c1.write({
-            "P1 max_streak": strk[1]["max"], "P1 avg_streak": round(strk[1]["avg"],2),
-            "P2 max_streak": strk[2]["max"], "P2 avg_streak": round(strk[2]["avg"],2),
-        })
-        h2t = hunt_to_target(s)
-        if h2t.empty:
-            c2.info("Sem dados de Hunt→Target ainda.")
-        else:
-            c2.dataframe(h2t, width='stretch', height=160)
 
-        st.subheader("Mini boards")
-        cL, cR = st.columns(2)
-        figL = board_heatmap(s[s["attacker"]==1], W, H, f"Ataques do {p1 or 'P1'}")
-        figR = board_heatmap(s[s["attacker"]==2], W, H, f"Ataques do {p2 or 'P2'}")
-
-        cell_px = 30
-        min_px, max_px = 200, 800
-        height_px = int(max(min_px, min(max_px, cell_px * H + 80)))
-        width_px  = int(max(min_px, min(max_px, cell_px * W + 80)))
-
-        for fig in (figL, figR):
-            fig.update_layout(
-                height=height_px, width=width_px,
-                yaxis=dict(scaleanchor="x", scaleratio=1, autorange="reversed"),
-                margin=dict(l=10, r=10, t=40, b=10),
-            )
-        cL.plotly_chart(figL, use_container_width=False)
-        cR.plotly_chart(figR, use_container_width=False)
-
-    # --- Auto refresh ONLY if user is on this pill, and cancel if pill changes mid-sleep
+    # -------- Auto refresh SOMENTE nesta aba --------
     if auto and st.session_state.get("active_pill") == "🟢 Partida Atual":
-        # bump an epoch; any new run will change this number
         epoch = st.session_state.get("_auto_epoch", 0) + 1
         st.session_state["_auto_epoch"] = epoch
-
         time.sleep(interval_s)
-
-        # after sleeping, confirm we are STILL on current tab and epoch unchanged
         still_current = st.session_state.get("active_pill") == "🟢 Partida Atual"
         same_epoch = st.session_state.get("_auto_epoch") == epoch
         if still_current and same_epoch:

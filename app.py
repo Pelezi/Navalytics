@@ -8,7 +8,6 @@ from tabs import dashboard, current_game, games, ranking
 st.set_page_config(page_title="Navalytics", page_icon="🛳️", layout="wide")
 st.title("🎯 Navalytics — Battleship Analytics")
 
-# --- Sidebar settings (kept centralized)
 db_path = DB_DEFAULT
 auto = True
 interval_s = 1
@@ -16,16 +15,19 @@ interval_s = 1
 # --- Pills navigation
 LABELS = ['📊 Dashboard', '🟢 Partida Atual', '🗂 Games', '🏆 Ranking']
 
+PLOT_CONFIG = {"displayModeBar": False}
+
 # Initialize once
 if "active_pill" not in st.session_state:
     st.session_state["active_pill"] = LABELS[0]
 
 # Use a key so Streamlit manages the state; no manual session_state writes
 st.pills(
-    '',
+    "Navigation",
     LABELS,
     selection_mode='single',
     key='active_pill',
+    label_visibility='hidden', 
 )
 
 choice = st.session_state["active_pill"]  # current selection
