@@ -1,12 +1,10 @@
-# app.py — Navalytics (Streamlit + pills)
-# Run: streamlit run app.py
 import streamlit as st
 
 from core import DB_DEFAULT
 from tabs import dashboard, current_game, games, ranking
 
-st.set_page_config(page_title="Navalytics", page_icon="🛳️", layout="wide")
-st.title("🎯 Navalytics — Battleship Analytics")
+st.set_page_config(page_title="GAS", page_icon="🛳️", layout="wide")
+st.title("🎯 GAS — Game Analyst System")
 
 db_path = DB_DEFAULT
 auto = True
