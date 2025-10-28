@@ -2,7 +2,6 @@
 import os
 import sqlite3
 import time
-import uuid
 from telemetry_parser import parse_line
 import serial  # pyserial
 from serial.tools import list_ports
@@ -18,6 +17,9 @@ TIMEOUT = 1  # segundos
 def _ts():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
 def log(level: str, msg: str):
     print(f"[{_ts()}] {level}: {msg}", flush=True)
 
@@ -27,17 +29,24 @@ def ensure_schema(conn: sqlite3.Connection):
     conn.commit()
     log("DB", "Schema verificado/aplicado com sucesso.")
 
-# ===== NOVO: gid atual da partida (gerado ao receber PN) =====
-CURRENT_GID: str | None = None
+# ===== gid atual da partida (INTEGER) =====
+CURRENT_GID: int | None = None
 
-# >>> ADD: utilitário para fechar partidas sem GE
+def _create_new_game(conn: sqlite3.Connection, started_at_ms: int | None = None) -> int:
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO games (started_at_ms) VALUES (?)",
+        (int(started_at_ms or now_ms()),),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+# >>> Fecha partidas sem GE quando for possível inferir o vencedor
 def close_unfinished_games(conn: sqlite3.Connection) -> int:
     """
     Fecha partidas que possuem registro em 'games' mas ainda não possuem linha em 'game_end'.
-    - finished_at_ms = último ts_ms em shots daquele gid (fallback para started_at_ms)
-    - winner = 0 (indefinido)
-    - p1_score/p2_score = 0
-    - Preenche contagens básicas de tiros e acertos
+    - Tenta inferir o vencedor a partir de shots.remaining_def == 0 (último tiro que zerou defesa).
+    - Se não for possível inferir, não fecha (evita winner inválido).
     Retorna a quantidade de partidas fechadas.
     """
     cur = conn.cursor()
@@ -47,37 +56,45 @@ def close_unfinished_games(conn: sqlite3.Connection) -> int:
         FROM games g
         LEFT JOIN game_end ge ON ge.gid = g.gid
         WHERE ge.gid IS NULL
-    """
+        """
     )
     to_close = cur.fetchall()
     closed = 0
 
     for gid, started_at_ms in to_close:
-        # último shot da partida
-        cur.execute("SELECT MAX(ts_ms) FROM shots WHERE gid = ?", (gid,))
-        row = cur.fetchone()
-        last_shot_ms = row[0] if row and row[0] is not None else None
-
-        finished_at_ms = (
-            last_shot_ms if last_shot_ms is not None else (started_at_ms or int(time.time() * 1000))
+        # tiro final que zerou defesa (se existir)
+        cur.execute(
+            """
+            SELECT attacker, defender, ts_ms
+            FROM shots
+            WHERE gid = ? AND remaining_def = 0
+            ORDER BY ts_ms DESC, id DESC
+            LIMIT 1
+            """,
+            (gid,),
         )
-        duration_ms = (
-            finished_at_ms - (started_at_ms or finished_at_ms)
-            if finished_at_ms is not None
-            else 0
-        )
+        fin = cur.fetchone()
 
-        # contagens básicas (mantém telemetria mínima)
+        if fin is None:
+            # não dá para inferir vencedor; pula
+            continue
+
+        last_attacker, last_defender, last_ts = fin
+        winner = int(last_attacker)  # quem atacou quando defesa do oponente chegou a 0
+        finished_at_ms = int(last_ts or started_at_ms or now_ms())
+        duration_ms = int(finished_at_ms - (started_at_ms or finished_at_ms))
+
+        # contagens básicas
         cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 1", (gid,))
-        p1_shots = cur.fetchone()[0]
+        p1_shots = int(cur.fetchone()[0])
         cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 2", (gid,))
-        p2_shots = cur.fetchone()[0]
+        p2_shots = int(cur.fetchone()[0])
         cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 1 AND hit = 1", (gid,))
-        p1_hits = cur.fetchone()[0]
+        p1_hits = int(cur.fetchone()[0])
         cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 2 AND hit = 1", (gid,))
-        p2_hits = cur.fetchone()[0]
+        p2_hits = int(cur.fetchone()[0])
 
-        # inserir o encerramento com pontuação zerada
+        # sunk_cells/score não são inferidos aqui -> mantém 0
         cur.execute(
             """
             INSERT INTO game_end
@@ -87,20 +104,14 @@ def close_unfinished_games(conn: sqlite3.Connection) -> int:
                finished_at_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(gid) DO NOTHING
-        """,
+            """,
             (
                 gid,
-                0,  # winner indefinido
-                int(duration_ms) if duration_ms is not None else 0,
-                int(p1_shots),
-                int(p1_hits),
-                0,
-                0,  # sunk_cells não calculado aqui
-                int(p2_shots),
-                int(p2_hits),
-                0,
-                0,
-                int(finished_at_ms),
+                winner,
+                duration_ms,
+                p1_shots, p1_hits, 0, 0,
+                p2_shots, p2_hits, 0, 0,
+                finished_at_ms,
             ),
         )
         closed += 1
@@ -108,22 +119,22 @@ def close_unfinished_games(conn: sqlite3.Connection) -> int:
     conn.commit()
     return closed
 
-def new_db_gid() -> str:
-    return uuid.uuid4().hex  # 32 chars hex único
-
-def ensure_current_gid(reason: str) -> str:
-    """Garante que exista um CURRENT_GID (cria provisório se necessário)."""
+def ensure_current_gid(conn: sqlite3.Connection, reason: str) -> int:
+    """
+    Garante que exista um CURRENT_GID (cria jogo imediatamente caso não exista).
+    Retorna o gid INTEGER atual.
+    """
     global CURRENT_GID
     if CURRENT_GID is None:
-        CURRENT_GID = new_db_gid()
-        log("WARN", f"Nenhum PN recebido antes de {reason}. Criando db_gid provisório: {CURRENT_GID}")
-    return CURRENT_GID
+        CURRENT_GID = _create_new_game(conn)
+        log("WARN", f"Nenhum PN recebido antes de {reason}. Criando jogo provisório: gid={CURRENT_GID}")
+    return int(CURRENT_GID)
 
-def upsert_players(conn, db_gid: str, name1: str, name2: str):
-    # cria placeholder de game se ainda não existir
+def upsert_players(conn: sqlite3.Connection, db_gid: int, name1: str, name2: str):
+    # garante a existência do jogo (idempotente: ignora se já existe)
     conn.execute(
-        "INSERT OR IGNORE INTO games (gid, w, h, started_at_ms) VALUES (?, ?, ?, ?)",
-        (db_gid, 0, 0, int(time.time() * 1000)),
+        "INSERT OR IGNORE INTO games (gid, started_at_ms) VALUES (?, ?)",
+        (db_gid, now_ms()),
     )
     conn.execute(
         "INSERT OR REPLACE INTO players (gid, player, name) VALUES (?, 1, ?)",
@@ -141,53 +152,54 @@ def handle_event(conn, ev) -> str:
     d = ev.data
 
     if k == "PN":
-        # Gera um novo gid para cada nova partida
-        CURRENT_GID = new_db_gid()
+        # Nova partida: cria jogo para obter gid INTEGER
+        CURRENT_GID = _create_new_game(conn)
         upsert_players(conn, CURRENT_GID, d["name1"], d["name2"])
         conn.commit()
-        return (f"PN salvo: db_gid={CURRENT_GID} "
+        return (f"PN salvo: gid={CURRENT_GID} "
                 f"p1='{d['name1']}' p2='{d['name2']}'")
 
     elif k == "GS":
-        # >>> CHANGE: fechar quaisquer partidas antigas sem GE antes de criar/atualizar games
+        # Fecha partidas antigas possíveis de fechar e atualiza started_at_ms
         closed = close_unfinished_games(conn)
         if closed:
             log("DB", f"Fechadas {closed} partidas sem game_end antes de registrar GS.")
 
-        db_gid = ensure_current_gid("GS")
+        db_gid = ensure_current_gid(conn, "GS")
+
+        # Atualiza somente started_at_ms (novo schema não tem w/h)
         conn.execute(
             """
-            INSERT INTO games (gid, w, h, started_at_ms)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(gid) DO UPDATE SET
-              w=excluded.w, h=excluded.h, started_at_ms=excluded.started_at_ms
-        """,
-            (db_gid, d["w"], d["h"], d["started_at_ms"]),
+            UPDATE games
+            SET started_at_ms = ?
+            WHERE gid = ?
+            """,
+            (int(d["started_at_ms"]), db_gid),
         )
         conn.commit()
-        return (f"GS salvo: db_gid={db_gid} w={d['w']} h={d['h']} started_at_ms={d['started_at_ms']}")
+        return (f"GS salvo: gid={db_gid} started_at_ms={d['started_at_ms']}")
 
     elif k == "PS":
-        db_gid = ensure_current_gid("PS")
+        db_gid = ensure_current_gid(conn, "PS")
         conn.execute(
             """
             INSERT INTO placements (gid, player, x, y, len, horiz, ts_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
+            """,
             (db_gid, d["player"], d["x"], d["y"], d["len"], d["horiz"], d["ts_ms"]),
         )
         conn.commit()
         hv = "H" if d["horiz"] else "V"
-        return (f"PS salvo: db_gid={db_gid} p={d['player']} "
+        return (f"PS salvo: gid={db_gid} p={d['player']} "
                 f"pos=({d['x']},{d['y']}) len={d['len']} dir={hv} ts={d['ts_ms']}")
 
     elif k == "SH":
-        db_gid = ensure_current_gid("SH")
+        db_gid = ensure_current_gid(conn, "SH")
         conn.execute(
             """
             INSERT INTO shots (gid, attacker, defender, x, y, hit, sunk, remaining_def, ts_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+            """,
             (
                 db_gid,
                 d["attacker"],
@@ -201,12 +213,12 @@ def handle_event(conn, ev) -> str:
             ),
         )
         conn.commit()
-        return (f"SH salvo: db_gid={db_gid} "
+        return (f"SH salvo: gid={db_gid} "
                 f"{d['attacker']}→{d['defender']} ({d['x']},{d['y']}) "
                 f"hit={d['hit']} sunk={d['sunk']} rem={d['remaining_def']} ts={d['ts_ms']}")
 
     elif k == "GE":
-        db_gid = ensure_current_gid("GE")
+        db_gid = ensure_current_gid(conn, "GE")
         # garante players (caso PN tenha sido perdido)
         conn.execute(
             "INSERT OR IGNORE INTO players (gid, player, name) VALUES (?, 1, ?)",
@@ -230,7 +242,7 @@ def handle_event(conn, ev) -> str:
               p1_shots=excluded.p1_shots, p1_hits=excluded.p1_hits, p1_sunk_cells=excluded.p1_sunk_cells, p1_score=excluded.p1_score,
               p2_shots=excluded.p2_shots, p2_hits=excluded.p2_hits, p2_sunk_cells=excluded.p2_sunk_cells, p2_score=excluded.p2_score,
               finished_at_ms=excluded.finished_at_ms
-        """,
+            """,
             (
                 db_gid,
                 d["winner"],
@@ -247,7 +259,7 @@ def handle_event(conn, ev) -> str:
             ),
         )
         conn.commit()
-        return (f"GE salvo: db_gid={db_gid} winner={d['winner']} dur={d['duration_ms']}ms")
+        return (f"GE salvo: gid={db_gid} winner={d['winner']} dur={d['duration_ms']}ms")
 
     else:
         return "Evento desconhecido (não salvo)"
