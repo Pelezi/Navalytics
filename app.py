@@ -15,16 +15,13 @@ LABELS = ['📊 Dashboard', '🟢 Partida Atual', '🗂 Games', '🏆 Ranking']
 
 PLOT_CONFIG = {"displayModeBar": False}
 
-# Initialize once
-if "active_pill" not in st.session_state:
-    st.session_state["active_pill"] = LABELS[0]
-
-# Use a key so Streamlit manages the state; no manual session_state writes
+# Use a key so Streamlit manages the state automatically
 st.pills(
     "Navigation",
     LABELS,
     selection_mode='single',
     key='active_pill',
+    default=LABELS[0],
     label_visibility='hidden', 
 )
 

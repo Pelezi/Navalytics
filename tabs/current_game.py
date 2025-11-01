@@ -6,7 +6,7 @@ import streamlit as st
 import plotly.graph_objects as go
 
 from core import (
-    get_current_gid, get_players, get_board_size, shots_df, get_started_at_ms, now_ms, ms_to_mmss, player_summary, hit_streaks,
+    get_current_gid, get_players, shots_df, get_started_at_ms, now_ms, ms_to_mmss, player_summary, hit_streaks,
     hunt_to_target, top_highscores, get_player_ranking_position, sql_df
 )
 
@@ -219,7 +219,6 @@ def render(db_path: str, auto: bool, interval_s: int):
     # ---------------- Partida em andamento ----------------
     else:
         p1, p2 = get_players(db_path, gid)
-        W, H = get_board_size(db_path, gid)
         s = shots_df(db_path, gid)
 
         # Estilo dos cards/feed
@@ -246,7 +245,7 @@ def render(db_path: str, auto: bool, interval_s: int):
         st.markdown(
             f"### Partida em andamento  "
             f"<span class='live'><span class='dot'></span>LIVE</span>  "
-            f"<span style='opacity:.7'>• GID: <code>{gid}</code> • Jogadores: <b>{html.escape(p1 or 'P1')}</b> × <b>{html.escape(p2 or 'P2')}</b></span>",
+            f"<span style='opacity:.7'>• Partida: <code>{gid}</code> • Jogadores: <b>{html.escape(p1 or 'P1')}</b> × <b>{html.escape(p2 or 'P2')}</b></span>",
             unsafe_allow_html=True
         )
 
@@ -282,10 +281,10 @@ def render(db_path: str, auto: bool, interval_s: int):
         with boards_area:
             b1, b2 = st.columns(2, gap="large")
             with b1:
-                fig1 = board_figure(s[s["attacker"] == 1], W, H, f"Tabuleiro — Ataques de {p1 or 'P1'}")
+                fig1 = board_figure(s[s["attacker"] == 1], 8, 8, f"Tabuleiro — Ataques de {p1 or 'P1'}")
                 st.plotly_chart(fig1, config=PLOT_CONFIG)
             with b2:
-                fig2 = board_figure(s[s["attacker"] == 2], W, H, f"Tabuleiro — Ataques de {p2 or 'P2'}")
+                fig2 = board_figure(s[s["attacker"] == 2], 8, 8, f"Tabuleiro — Ataques de {p2 or 'P2'}")
                 st.plotly_chart(fig2, config=PLOT_CONFIG)
 
         with feed_area:

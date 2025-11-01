@@ -43,16 +43,16 @@ def render(db_path: str):
         st.info("Ainda não há partidas registradas.")
         return
 
-    tbl["gid_short"] = tbl["gid"].str.slice(0,8) + "…"
+    tbl["gid_display"] = tbl["gid"].astype(str)
     for p in (1,2):
         shots, hits = f"p{p}_shots", f"p{p}_hits"
         acc_col = f"p{p}_acc"
         if shots in tbl and hits in tbl:
             tbl[acc_col] = (tbl[hits] / tbl[shots]).fillna(0).round(3)
-    view = tbl[["gid_short","p1","p2","winner","duration_ms","p1_shots","p1_hits","p1_acc","p2_shots","p2_hits","p2_acc"]]
+    view = tbl[["gid_display","p1","p2","winner","duration_ms","p1_shots","p1_hits","p1_acc","p2_shots","p2_hits","p2_acc"]]
     view = view.rename(columns={
-        "gid_short":"GID", "winner":"Vencedor", "duration_ms":"Duração (ms)",
+        "gid_display":"GID", "winner":"Vencedor", "duration_ms":"Duração (ms)",
         "p1_shots":"P1 Tiros","p1_hits":"P1 Acertos","p1_acc":"P1 Acc",
         "p2_shots":"P2 Tiros","p2_hits":"P2 Acertos","p2_acc":"P2 Acc",
     })
-    st.dataframe(view, use_container_width=True, height=300)
+    st.dataframe(view, width='stretch', height=300, hide_index=True)

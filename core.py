@@ -48,22 +48,9 @@ def get_players(db: str, gid: str) -> Tuple[Optional[str], Optional[str]]:
       MAX(CASE WHEN player=2 THEN name END) AS p2
     FROM players WHERE gid=?
     """
-    df = sql_df(db, q, (gid,))
+    df = sql_df(db, q, (str(gid),))
     if df.empty: return None, None
     return df.iloc[0]["p1"], df.iloc[0]["p2"]
-
-def get_board_size(db: str, gid: Optional[str]) -> Tuple[int,int]:
-    if gid is None:
-        q = "SELECT w,h FROM games LIMIT 1"
-        df = sql_df(db, q)
-    else:
-        q = "SELECT w,h FROM games WHERE gid=?"
-        df = sql_df(db, q, (gid,))
-    if df.empty:
-        return 8,8
-    w = int(df.iloc[0]["w"] or 8)
-    h = int(df.iloc[0]["h"] or 8)
-    return w, h
 
 def get_avg_duration_ms(db: str) -> Optional[float]:
     q = "SELECT AVG(duration_ms) AS avg_dur FROM game_end"
@@ -73,13 +60,13 @@ def get_avg_duration_ms(db: str) -> Optional[float]:
 
 def get_started_at_ms(db: str, gid: str) -> Optional[int]:
     q = "SELECT started_at_ms FROM games WHERE gid=?"
-    df = sql_df(db, q, (gid,))
+    df = sql_df(db, q, (str(gid),))
     if df.empty or pd.isna(df.iloc[0]["started_at_ms"]): return None
     return int(df.iloc[0]["started_at_ms"])
 
 def shots_df(db: str, gid: Optional[str] = None) -> pd.DataFrame:
     if gid:
-        return sql_df(db, "SELECT * FROM shots WHERE gid=? ORDER BY ts_ms", (gid,))
+        return sql_df(db, "SELECT * FROM shots WHERE gid=? ORDER BY ts_ms", (str(gid),))
     return sql_df(db, "SELECT * FROM shots ORDER BY gid, ts_ms")
 
 def games_list(db: str) -> pd.DataFrame:
