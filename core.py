@@ -98,6 +98,7 @@ def games_list(db: str) -> pd.DataFrame:
     LEFT JOIN p  ON p.gid  = g.gid
     LEFT JOIN game_end ge  ON ge.gid = g.gid
     LEFT JOIN s  ON s.gid  = g.gid
+    WHERE ge.gid IS NOT NULL
     ORDER BY g.rowid DESC
     """
     return sql_df(db, q)
@@ -162,7 +163,7 @@ def ms_to_mmss(ms: float) -> str:
     return f"{total_seconds//60:02d}:{total_seconds%60:02d}"
 
 def accuracy_global(db: str) -> Optional[float]:
-    df = sql_df(db, "SELECT SUM(hit)*1.0/COUNT(*) AS acc FROM shots")
+    df = sql_df(db, "SELECT SUM(hit)*1.0/COUNT(*) AS acc FROM shots WHERE gid IN (SELECT gid FROM game_end)")
     if df.empty or pd.isna(df.iloc[0]["acc"]): return None
     return float(df.iloc[0]["acc"])
 
@@ -178,6 +179,7 @@ def starter_win_rate(db: str) -> Optional[float]:
     )
     SELECT SUM(CASE WHEN ge.winner = fs.starter THEN 1 ELSE 0 END)*1.0/COUNT(*) AS wr
     FROM fs JOIN game_end ge USING(gid)
+    WHERE fs.gid IN (SELECT gid FROM game_end)
     """
     df = sql_df(db, q)
     if df.empty or pd.isna(df.iloc[0]["wr"]): return None
@@ -193,11 +195,30 @@ def avg_first_hit_seconds(db: str) -> Optional[float]:
       GROUP BY g.gid
     )
     SELECT AVG((first_hit_ts - started_at_ms)/1000.0) AS avg_s
-    FROM fh WHERE first_hit_ts IS NOT NULL AND started_at_ms IS NOT NULL
+    FROM fh 
+    WHERE first_hit_ts IS NOT NULL 
+    AND started_at_ms IS NOT NULL
+    AND gid IN (SELECT gid FROM game_end)
     """
     df = sql_df(db, q)
     if df.empty or pd.isna(df.iloc[0]["avg_s"]): return None
     return float(df.iloc[0]["avg_s"])
+
+def avg_turns_per_game(db: str) -> Optional[float]:
+    """Calculate average number of turns per game.
+    A turn is counted as one shot from each player (2 shots = 1 turn)."""
+    q = """
+    SELECT AVG(cnt/2.0) AS avg_turns 
+    FROM (
+      SELECT gid, COUNT(*) AS cnt 
+      FROM shots 
+      WHERE gid IN (SELECT gid FROM game_end)
+      GROUP BY gid
+    )
+    """
+    df = sql_df(db, q)
+    if df.empty or pd.isna(df.iloc[0]["avg_turns"]): return None
+    return float(df.iloc[0]["avg_turns"])
 
 def hit_streaks(df: pd.DataFrame) -> dict:
     out = {1: {"max":0, "avg":0.0}, 2: {"max":0, "avg":0.0}}
@@ -240,6 +261,303 @@ def board_heatmap(shots: pd.DataFrame, W: int, H: int, title: str) -> go.Figure:
     fig = go.Figure(data=go.Heatmap(z=Z, showscale=False))
     fig.update_layout(title=title, xaxis=dict(dtick=1), yaxis=dict(dtick=1),
                       margin=dict(l=10,r=10,t=40,b=10))
+    return fig
+
+def global_hit_rate_heatmap(db: str, W: int = 8, H: int = 8, compact: bool = False) -> Optional[go.Figure]:
+    """
+    Creates a heatmap showing hit rate percentage for each board position across all games.
+    Returns None if no data is available.
+    """
+    query = "SELECT x, y, hit FROM shots"
+    shots = sql_df(db, query)
+    
+    if shots.empty:
+        return None
+    
+    # Initialize grids for counting total shots and hits
+    grid_count = [[0 for _ in range(W)] for _ in range(H)]
+    grid_hits = [[0 for _ in range(W)] for _ in range(H)]
+    
+    # Count shots and hits for each position
+    for _, row in shots.iterrows():
+        x, y = int(row["x"]), int(row["y"])
+        if 0 <= x < W and 0 <= y < H:
+            grid_count[y][x] += 1
+            if row["hit"] == 1:
+                grid_hits[y][x] += 1
+    
+    # Calculate hit rate percentage
+    Z = [[0.0 for _ in range(W)] for _ in range(H)]
+    for y in range(H):
+        for x in range(W):
+            if grid_count[y][x] > 0:
+                Z[y][x] = (grid_hits[y][x] / grid_count[y][x]) * 100
+    
+    # Create heatmap
+    fig = go.Figure(data=go.Heatmap(
+        z=Z,
+        colorscale='RdYlGn',
+        colorbar=dict(title="Hit %", ticksuffix="%"),
+        hovertemplate='X: %{x}<br>Y: %{y}<br>Taxa de acerto: %{z:.1f}%<extra></extra>'
+    ))
+    
+    # Calculate dimensions to keep cells square
+    cell_size = 45 if compact else 60  # pixels per cell
+    width = W * cell_size + 150 if compact else W * cell_size + 180
+    height = H * cell_size + 100 if compact else H * cell_size + 120
+    
+    fig.update_layout(
+        title="Taxa de Acerto" if compact else "Heatmap de Taxa de Acerto Global",
+        xaxis=dict(title="X", dtick=1, side='bottom', constrain='domain'),
+        yaxis=dict(title="Y", dtick=1, autorange='reversed', scaleanchor='x', scaleratio=1),
+        margin=dict(l=50, r=100, t=60, b=50) if compact else dict(l=60, r=120, t=80, b=60),
+        height=height,
+        width=width
+    )
+    
+    return fig
+
+def global_hit_rate_heatmap_progressive(db: str, max_gid: Optional[int] = None, W: int = 8, H: int = 8, compact: bool = False) -> Optional[go.Figure]:
+    """
+    Creates a heatmap showing hit rate percentage for each board position.
+    If max_gid is provided, only includes games up to and including that gid.
+    Returns None if no data is available.
+    """
+    if max_gid is not None:
+        query = "SELECT x, y, hit FROM shots WHERE gid <= ?"
+        shots = sql_df(db, query, (max_gid,))
+    else:
+        query = "SELECT x, y, hit FROM shots"
+        shots = sql_df(db, query)
+    
+    if shots.empty:
+        return None
+    
+    # Initialize grids for counting total shots and hits
+    grid_count = [[0 for _ in range(W)] for _ in range(H)]
+    grid_hits = [[0 for _ in range(W)] for _ in range(H)]
+    
+    # Count shots and hits for each position
+    for _, row in shots.iterrows():
+        x, y = int(row["x"]), int(row["y"])
+        if 0 <= x < W and 0 <= y < H:
+            grid_count[y][x] += 1
+            if row["hit"] == 1:
+                grid_hits[y][x] += 1
+    
+    # Calculate hit rate percentage
+    Z = [[0.0 for _ in range(W)] for _ in range(H)]
+    for y in range(H):
+        for x in range(W):
+            if grid_count[y][x] > 0:
+                Z[y][x] = (grid_hits[y][x] / grid_count[y][x]) * 100
+    
+    # Create heatmap
+    total_shots = sum(sum(row) for row in grid_count)
+    total_hits = sum(sum(row) for row in grid_hits)
+    
+    title_suffix = f" (até partida #{max_gid})" if max_gid is not None else ""
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=Z,
+        colorscale='RdYlGn',
+        colorbar=dict(title="Hit %", ticksuffix="%"),
+        hovertemplate='X: %{x}<br>Y: %{y}<br>Taxa de acerto: %{z:.1f}%<extra></extra>'
+    ))
+    
+    # Calculate dimensions to keep cells square
+    cell_size = 45 if compact else 60  # pixels per cell
+    width = W * cell_size + 150 if compact else W * cell_size + 180
+    height = H * cell_size + 100 if compact else H * cell_size + 120
+    
+    fig.update_layout(
+        title=f"Taxa de Acerto{title_suffix}" if compact else f"Heatmap de Taxa de Acerto{title_suffix}",
+        xaxis=dict(title="X", dtick=1, side='bottom', constrain='domain'),
+        yaxis=dict(title="Y", dtick=1, autorange='reversed', scaleanchor='x', scaleratio=1),
+        margin=dict(l=50, r=100, t=60, b=50) if compact else dict(l=60, r=120, t=100, b=60),
+        height=height,
+        width=width
+    )
+    
+    return fig
+
+def get_game_ids_chronological(db: str) -> list:
+    """
+    Returns a list of game IDs in chronological order.
+    """
+    query = "SELECT DISTINCT gid FROM games WHERE gid IN (SELECT gid FROM game_end) ORDER BY started_at_ms ASC"
+    df = sql_df(db, query)
+    return df["gid"].tolist() if not df.empty else []
+
+def get_first_last_sunk_ship_stats(db: str) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """
+    Returns two DataFrames:
+    1. First sunk ship lengths and their counts
+    2. Last sunk ship lengths and their counts
+    """
+    # Query to get first and last sunk ships per game per defender
+    query = """
+    WITH ship_sinks AS (
+        SELECT 
+            s.gid,
+            s.defender,
+            s.ts_ms,
+            s.x,
+            s.y,
+            p.len,
+            ROW_NUMBER() OVER (PARTITION BY s.gid, s.defender ORDER BY s.ts_ms ASC) as sink_order_asc,
+            ROW_NUMBER() OVER (PARTITION BY s.gid, s.defender ORDER BY s.ts_ms DESC) as sink_order_desc
+        FROM shots s
+        JOIN placements p ON s.gid = p.gid AND s.defender = p.player
+        WHERE s.sunk = 1
+        AND s.x >= p.x AND s.x < p.x + CASE WHEN p.horiz = 1 THEN p.len ELSE 1 END
+        AND s.y >= p.y AND s.y < p.y + CASE WHEN p.horiz = 0 THEN p.len ELSE 1 END
+    )
+    SELECT 
+        len,
+        SUM(CASE WHEN sink_order_asc = 1 THEN 1 ELSE 0 END) as first_sunk_count,
+        SUM(CASE WHEN sink_order_desc = 1 THEN 1 ELSE 0 END) as last_sunk_count
+    FROM ship_sinks
+    GROUP BY len
+    ORDER BY len
+    """
+    
+    df = sql_df(db, query)
+    if df.empty:
+        return None, None
+    
+    first_df = df[['len', 'first_sunk_count']].copy()
+    last_df = df[['len', 'last_sunk_count']].copy()
+    
+    return first_df, last_df
+
+def create_sunk_ship_bar_chart(df: pd.DataFrame, title: str, color: str) -> Optional[go.Figure]:
+    """
+    Creates a bar chart for sunk ship statistics.
+    """
+    if df is None or df.empty:
+        return None
+    
+    count_col = 'first_sunk_count' if 'first_sunk_count' in df.columns else 'last_sunk_count'
+    
+    fig = go.Figure(data=[
+        go.Bar(
+            x=df['len'],
+            y=df[count_col],
+            marker_color=color,
+            text=df[count_col],
+            textposition='outside',
+            hovertemplate='Tamanho: %{x}<br>Quantidade: %{y}<extra></extra>'
+        )
+    ])
+    
+    # Calculate appropriate y-axis range to accommodate text labels
+    max_value = df[count_col].max()
+    y_range = [0, max_value * 1.15]  # Add 15% padding for text
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title="Tamanho do Navio",
+        yaxis_title="Quantidade",
+        xaxis=dict(tickmode='linear', dtick=1),
+        yaxis=dict(range=y_range),
+        margin=dict(l=40, r=40, t=50, b=40),
+        height=300,
+        showlegend=False
+    )
+    
+    return fig
+
+def get_first_ship_vs_turns_winner(db: str) -> Optional[pd.DataFrame]:
+    """
+    Returns the relationship between first sunk ship length and average turns,
+    considering only winner's shots.
+    """
+    query = """
+    WITH first_sunk_per_game AS (
+        SELECT 
+            s.gid,
+            ge.winner,
+            s.defender,
+            p.len,
+            MIN(s.ts_ms) as first_sunk_ts,
+            ROW_NUMBER() OVER (PARTITION BY s.gid, s.defender ORDER BY MIN(s.ts_ms)) as is_first
+        FROM shots s
+        JOIN placements p ON s.gid = p.gid AND s.defender = p.player
+        JOIN game_end ge ON ge.gid = s.gid
+        WHERE s.sunk = 1
+        AND s.x >= p.x AND s.x < p.x + CASE WHEN p.horiz = 1 THEN p.len ELSE 1 END
+        AND s.y >= p.y AND s.y < p.y + CASE WHEN p.horiz = 0 THEN p.len ELSE 1 END
+        AND ge.gid IS NOT NULL
+        GROUP BY s.gid, s.defender, p.len
+    ),
+    first_ship_by_winner AS (
+        SELECT 
+            gid,
+            winner,
+            len
+        FROM first_sunk_per_game
+        WHERE is_first = 1 
+        AND defender != winner
+        AND gid IN (SELECT gid FROM game_end)
+    ),
+    winner_shots_per_game AS (
+        SELECT 
+            s.gid,
+            COUNT(*) as total_shots
+        FROM shots s
+        JOIN game_end ge ON ge.gid = s.gid
+        WHERE s.attacker = ge.winner
+        AND s.gid IN (SELECT gid FROM game_end)
+        GROUP BY s.gid
+    )
+    SELECT 
+        fs.len,
+        AVG(ws.total_shots / 2.0) as avg_turns,
+        COUNT(*) as game_count
+    FROM first_ship_by_winner fs
+    JOIN winner_shots_per_game ws ON ws.gid = fs.gid
+    WHERE fs.gid IN (SELECT gid FROM game_end)
+    GROUP BY fs.len
+    ORDER BY fs.len
+    """
+    
+    df = sql_df(db, query)
+    return df if not df.empty else None
+
+def create_first_ship_vs_turns_chart(df: pd.DataFrame) -> Optional[go.Figure]:
+    """
+    Creates a line chart showing relationship between first sunk ship length 
+    and average turns to win.
+    """
+    if df is None or df.empty:
+        return None
+    
+    fig = go.Figure()
+    
+    # Add line with markers
+    fig.add_trace(go.Scatter(
+        x=df['len'],
+        y=df['avg_turns'],
+        mode='lines+markers',
+        line=dict(color='#6C5CE7', width=3),
+        marker=dict(size=10, color='#6C5CE7', line=dict(width=2, color='white')),
+        text=[f"{turns:.1f} turnos<br>{count} partidas" 
+              for turns, count in zip(df['avg_turns'], df['game_count'])],
+        hovertemplate='Tamanho: %{x}<br>Média de turnos: %{y:.1f}<br>%{text}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title="Primeiro Navio Afundado vs Turnos para Vencer",
+        xaxis_title="Tamanho do Primeiro Navio Afundado",
+        yaxis_title="Média de Turnos (Vencedor)",
+        xaxis=dict(tickmode='linear', dtick=1),
+        margin=dict(l=50, r=40, t=60, b=50),
+        height=350,
+        showlegend=False,
+        hovermode='x unified'
+    )
+    
     return fig
 
 def player_summary(shots: pd.DataFrame, defender_side: int) -> Optional[int]:
