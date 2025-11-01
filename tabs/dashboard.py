@@ -10,7 +10,17 @@ from core import (
 )
 
 def render(db_path: str):
-    colA, colB, colC, colD, colE, colF = st.columns(6)
+    # KPI card styling (matching current_game.py)
+    st.markdown("""
+    <style>
+      .kpi {border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.03);
+        border-radius:16px; padding:7px 16px; box-shadow:0 6px 18px rgba(0,0,0,.25);}
+      .kpi h3 {margin:0; font-size:13px; opacity:.85; letter-spacing:.02em; padding: 0.75rem 0px 0.5rem;}
+      .kpi .v {font-weight:800; font-size:28px;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    colA, colB, colC, colD, colE, colF, colG = st.columns(7)
 
     # total games
     df_games = sql_df(db_path, "SELECT COUNT(*) AS n_games FROM (SELECT DISTINCT gid FROM games WHERE gid IN (SELECT gid FROM game_end))")

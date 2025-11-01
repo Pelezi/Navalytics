@@ -34,6 +34,50 @@ def render(db_path: str):
         df = df.merge(start_df, on="gid", how="left")
 
     # ------- Filtros (Topo) -------
+    st.markdown(
+        """
+        <style>
+        .hist-wrap {max-width: 1200px; margin: 0 auto;}
+        .hist-head {display:flex; align-items:center; justify-content:space-between; gap:16px; margin: 6px 2px 14px;}
+        .hist-title {font-size: 22px; font-weight: 800; margin: 0;}
+        .hist-sub {opacity:.75; font-size: 13px; margin-top: 2px;}
+        .flt {display:flex; gap:10px; align-items:center;}
+        .game-card {
+            border:1px solid rgba(255,255,255,.09);
+            background: rgba(255,255,255,.03);
+            border-radius: 16px;
+            padding: 14px 16px;
+            margin: 10px 0 14px;
+            box-shadow: 0 8px 26px rgba(0,0,0,.30);
+        }
+        .game-top {display:flex; align-items:center; justify-content:space-between; gap:10px;}
+        .gid {font-weight: 800; letter-spacing:.02em;}
+        .date {opacity:.75; font-size: 12px; margin-left: 8px;}
+        .badge-win {
+            display:inline-flex; align-items:center; gap:8px;
+            border:1px solid #22c55e; color:#22c55e;
+            background: #22c55e22; padding: 4px 10px; border-radius: 999px;
+            font-weight: 800; white-space: nowrap;
+        }
+        .matchup {margin-top: 6px; font-size: 16px;}
+        .matchup b {font-weight: 800;}
+        .row {
+            display:grid; grid-template-columns: 1fr 1fr 1fr; gap:24px;
+            margin-top: 12px;
+        }
+        .stat {opacity:.85; font-size: 12px; margin-bottom: 6px;}
+        .val {font-weight: 900; font-size: 22px;}
+        .pill {
+            display:inline-flex; align-items:center; justify-content:center;
+            min-width:64px; padding: 4px 10px; border-radius: 999px;
+            border:1px solid rgba(255,255,255,.14);
+            background: rgba(255,255,255,.06);
+            font-weight:800;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     with st.container():
         st.markdown("<div class='hist-wrap'>", unsafe_allow_html=True)

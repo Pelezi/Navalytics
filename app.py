@@ -3,15 +3,23 @@ import streamlit as st
 from core import DB_DEFAULT
 from tabs import dashboard, current_game, games, ranking
 
-st.set_page_config(page_title="GAS", page_icon="🛳️", layout="wide")
-st.title("🎯 GAS — Game Analyst System")
+st.set_page_config(page_title="GAS - Game Analyst System", page_icon="🛳️", layout="wide")
+
+# Reduce title margins
+st.markdown("""
+    <style>
+        .stMainBlockContainer {
+            padding-top: 1.5rem !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 db_path = DB_DEFAULT
 auto = True
 interval_s = 1
 
 # --- Pills navigation
-LABELS = ['📊 Dashboard', '🟢 Partida Atual', '🗂 Games', '🏆 Ranking']
+LABELS = ['📊 Dashboard', '🟢 Partida Atual', '🗂 Histórico', '🏆 Ranking']
 
 PLOT_CONFIG = {"displayModeBar": False}
 
@@ -32,7 +40,7 @@ if choice == '📊 Dashboard':
     dashboard.render(db_path)
 elif choice == '🟢 Partida Atual':
     current_game.render(db_path, auto=auto, interval_s=interval_s)
-elif choice == '🗂 Games':
+elif choice == '🗂 Histórico':
     games.render(db_path)
 elif choice == '🏆 Ranking':
     ranking.render(db_path)

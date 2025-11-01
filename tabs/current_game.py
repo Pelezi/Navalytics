@@ -74,8 +74,8 @@ def board_figure(shots, W: int, H: int, title: str) -> go.Figure:
         fig.add_shape(
             type="rect",
             x0=cx - 0.5, x1=cx + 0.5, y0=cy - 0.5, y1=cy + 0.5,
-            fillcolor="rgba(245,158,11,0.28)",  # amber @ ~28%
-            line=dict(color="#f59e0b", width=2),
+            fillcolor="rgba(34,197,94,0.28)",  # green @ ~28%
+            line=dict(color="#22c55e", width=2),
             layer="below",
         )
 
@@ -84,8 +84,8 @@ def board_figure(shots, W: int, H: int, title: str) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=[None], y=[None], mode="markers",
             marker=dict(symbol="square", size=14,
-                        color="rgba(245,158,11,0.28)",
-                        line=dict(color="#f59e0b", width=2)),
+                        color="rgba(34,197,94,0.28)",
+                        line=dict(color="#22c55e", width=2)),
             name="Navio afundado",
             hoverinfo="skip", showlegend=True
         ))
@@ -206,10 +206,6 @@ def render(db_path: str, auto: bool, interval_s: int):
             from core import render_ranking_podium_plus_list
             render_ranking_podium_plus_list(rank, limit=10)
 
-        if st.button("✅ OK, entendi"):
-            st.session_state["_just_ended"] = False
-            st.rerun()
-
         st.info("💡 A próxima partida aparecerá aqui automaticamente quando iniciada.")
 
     # ---------------- Sem partida ativa ----------------
@@ -225,18 +221,18 @@ def render(db_path: str, auto: bool, interval_s: int):
         st.markdown("""
         <style>
           .kpi {border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.03);
-                border-radius:16px; padding:14px 16px; box-shadow:0 6px 18px rgba(0,0,0,.25);}
+            border-radius:16px; padding:14px 16px; box-shadow:0 6px 18px rgba(0,0,0,.25);}
           .kpi h3 {margin:0 0 6px 0; font-size:13px; opacity:.85; letter-spacing:.02em;}
           .kpi .v {font-weight:800; font-size:28px;}
           .live {display:inline-flex; align-items:center; gap:8px; font-weight:700; opacity:.9;}
           .dot {width:10px; height:10px; border-radius:50%; background:#22c55e; box-shadow:0 0 12px #22c55e;}
           .feed-card {border:1px solid rgba(255,255,255,.08); background:rgba(255,255,255,.03);
-                      border-radius:16px; padding:12px; height:640px; overflow:auto;}
+                  border-radius:16px; padding:12px; height:640px; overflow:auto;}
           .evt {border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:10px 12px; margin:8px 0;}
           .pill {display:inline-block; font-weight:800; font-size:11px; padding:2px 8px; border-radius:999px; margin-right:8px;}
-          .hit {background:#ff6b6b22; border:1px solid #ff6b6b; color:#ff6b6b;}
-          .miss{background:#4aa3ff22; border:1px solid #4aa3ff; color:#4aa3ff;}
-          .sunk{background:#f59e0b22; border:1px solid #f59e0b; color:#f59e0b;}
+          .miss {background:#ff6b6b22; border:1px solid #ff6b6b; color:#ff6b6b;}
+          .hit {background:#4aa3ff22; border:1px solid #4aa3ff; color:#4aa3ff;}
+          .sunk {background:#22c55e22; border:1px solid #22c55e; color:#22c55e;}
           .evt small {opacity:.8;}
         </style>
         """, unsafe_allow_html=True)
