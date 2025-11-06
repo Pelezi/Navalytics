@@ -36,7 +36,7 @@ def _create_new_game(conn: sqlite3.Connection, started_at_ms: int | None = None)
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO games (started_at_ms) VALUES (?)",
-        (int(started_at_ms or now_ms()),),
+        (int(now_ms()),),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -67,23 +67,20 @@ def close_unfinished_games(conn: sqlite3.Connection) -> int:
             """
             SELECT attacker, defender, ts_ms
             FROM shots
-            WHERE gid = ? AND remaining_def = 0
-            ORDER BY ts_ms DESC, id DESC
+            WHERE gid = ?
+            ORDER BY remaining_def ASC, ts_ms ASC
             LIMIT 1
             """,
             (gid,),
         )
         fin = cur.fetchone()
-
         if fin is None:
-            # não dá para inferir vencedor; pula
             continue
 
         last_attacker, last_defender, last_ts = fin
         winner = int(last_attacker)  # quem atacou quando defesa do oponente chegou a 0
         finished_at_ms = int(last_ts or started_at_ms or now_ms())
         duration_ms = int(finished_at_ms - (started_at_ms or finished_at_ms))
-
         # contagens básicas
         cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 1", (gid,))
         p1_shots = int(cur.fetchone()[0])
@@ -93,6 +90,7 @@ def close_unfinished_games(conn: sqlite3.Connection) -> int:
         p1_hits = int(cur.fetchone()[0])
         cur.execute("SELECT COUNT(*) FROM shots WHERE gid = ? AND attacker = 2 AND hit = 1", (gid,))
         p2_hits = int(cur.fetchone()[0])
+        
 
         # sunk_cells/score não são inferidos aqui -> mantém 0
         cur.execute(
@@ -167,17 +165,16 @@ def handle_event(conn, ev) -> str:
 
         db_gid = ensure_current_gid(conn, "GS")
 
-        # Atualiza somente started_at_ms (novo schema não tem w/h)
         conn.execute(
             """
             UPDATE games
             SET started_at_ms = ?
             WHERE gid = ?
             """,
-            (int(d["started_at_ms"]), db_gid),
+            (now_ms(), db_gid),
         )
         conn.commit()
-        return (f"GS salvo: gid={db_gid} started_at_ms={d['started_at_ms']}")
+        return (f"GS salvo: gid={db_gid} started_at_ms={now_ms()}")
 
     elif k == "PS":
         db_gid = ensure_current_gid(conn, "PS")

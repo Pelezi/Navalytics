@@ -217,6 +217,15 @@ def render(db_path: str, auto: bool, interval_s: int):
         p1, p2 = get_players(db_path, gid)
         s = shots_df(db_path, gid)
 
+        has_shots = not s.empty
+
+        if not has_shots:
+            st.info("⚓ Os jogadores estão posicionando seus navios no tabuleiro...")
+            st.markdown(
+                f"**Partida:** `{gid}` • **Jogadores:** {html.escape(p1 or 'P1')} × {html.escape(p2 or 'P2')}",
+                unsafe_allow_html=True
+            )
+
         # Estilo dos cards/feed
         st.markdown("""
         <style>
