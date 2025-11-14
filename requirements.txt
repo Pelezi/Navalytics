@@ -1,5 +1,4 @@
 pyserial
 pandas
-matplotlib
 streamlit
 plotly
