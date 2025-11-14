@@ -36,7 +36,7 @@ def _create_new_game(conn: sqlite3.Connection, started_at_ms: int | None = None)
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO games (started_at_ms) VALUES (?)",
-        (int(now_ms()),),
+        (now_ms(),),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -109,7 +109,7 @@ def close_unfinished_games(conn: sqlite3.Connection) -> int:
                 duration_ms,
                 p1_shots, p1_hits, 0, 0,
                 p2_shots, p2_hits, 0, 0,
-                finished_at_ms,
+                now_ms(),
             ),
         )
         closed += 1
@@ -183,12 +183,12 @@ def handle_event(conn, ev) -> str:
             INSERT INTO placements (gid, player, x, y, len, horiz, ts_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (db_gid, d["player"], d["x"], d["y"], d["len"], d["horiz"], d["ts_ms"]),
+            (db_gid, d["player"], d["x"], d["y"], d["len"], d["horiz"], now_ms()),
         )
         conn.commit()
         hv = "H" if d["horiz"] else "V"
         return (f"PS salvo: gid={db_gid} p={d['player']} "
-                f"pos=({d['x']},{d['y']}) len={d['len']} dir={hv} ts={d['ts_ms']}")
+                f"pos=({d['x']},{d['y']}) len={d['len']} dir={hv} ts={now_ms()}")
 
     elif k == "SH":
         db_gid = ensure_current_gid(conn, "SH")
@@ -206,7 +206,7 @@ def handle_event(conn, ev) -> str:
                 d["hit"],
                 d["sunk"],
                 d["remaining_def"],
-                d["ts_ms"],
+                now_ms(),
             ),
         )
         conn.commit()
@@ -252,7 +252,7 @@ def handle_event(conn, ev) -> str:
                 d["p2_hits"],
                 d["p2_sunk_cells"],
                 d["p2_score"],
-                d["finished_at_ms"],
+                now_ms(),
             ),
         )
         conn.commit()
