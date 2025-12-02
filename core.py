@@ -117,10 +117,9 @@ def top_highscores(db: str, limit: int = 10) -> pd.DataFrame:
         LEFT JOIN players ON players.gid = game_end.gid
         WHERE players.player = 2
     )
-    SELECT Jogador, MAX(Highscore) AS Highscore
+    SELECT Jogador, Highscore AS Highscore
     FROM scores
     WHERE Jogador IS NOT NULL
-    GROUP BY Jogador
     ORDER BY Highscore DESC, Jogador ASC
     LIMIT {int(limit)}
     """
